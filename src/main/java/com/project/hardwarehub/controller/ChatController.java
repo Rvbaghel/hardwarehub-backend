@@ -13,8 +13,34 @@ import java.util.Map;
 @RequestMapping("/api/chat")
 @CrossOrigin(origins = "*")
 public class ChatController {
-    @Autowired private GeminiChatService geminiChatService;
-    @Autowired private GeminiUsageService geminiUsageService;
+
+    @Autowired
+    private GeminiChatService geminiChatService;
+
+    @Autowired
+    private GeminiUsageService geminiUsageService;
+
+    /**
+     * Returns the current shared daily AI usage for this user.
+     * The same GeminiUsageService is used by chat, blog summaries, and comparisons.
+     */
+    @GetMapping("/usage")
+    public ResponseEntity<?> getUsage(@RequestParam("userId") String userId) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", "You must be signed in to check AI usage."
+            ));
+        }
+
+        int questionsRemaining = geminiUsageService.getRemaining(userId);
+        int questionsUsed = GeminiUsageService.DAILY_LIMIT - questionsRemaining;
+
+        return ResponseEntity.ok(Map.of(
+                "dailyLimit", GeminiUsageService.DAILY_LIMIT,
+                "questionsUsed", questionsUsed,
+                "questionsRemaining", questionsRemaining
+        ));
+    }
 
     @PostMapping
     public ResponseEntity<?> handleChat(@RequestBody Map<String, Object> request) {
@@ -22,27 +48,42 @@ public class ChatController {
         Object messageObj = request.get("message");
         String message = messageObj instanceof String ? (String) messageObj : null;
 
-        if (message == null || message.isBlank())
-            return ResponseEntity.badRequest().body(Map.of("error", "Message cannot be empty."));
-        if (userIdObj == null || userIdObj.toString().isBlank())
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "You must be signed in to use the Hardware Assistant."));
+        if (message == null || message.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Message cannot be empty."
+            ));
+        }
+
+        if (userIdObj == null || userIdObj.toString().isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", "You must be signed in to use the Hardware Assistant."
+            ));
+        }
 
         try {
-            var result = geminiUsageService.execute(userIdObj.toString(),
-                    () -> geminiChatService.askHardwareBot(message));
+            var result = geminiUsageService.execute(
+                    userIdObj.toString(),
+                    () -> geminiChatService.askHardwareBot(message)
+            );
+
             return ResponseEntity.ok(Map.of(
                     "reply", result.getResult(),
                     "questionsUsed", result.getQuestionsUsed(),
-                    "questionsRemaining", result.getQuestionsRemaining()));
+                    "questionsRemaining", result.getQuestionsRemaining(),
+                    "dailyLimit", GeminiUsageService.DAILY_LIMIT
+            ));
         } catch (GeminiUsageService.DailyLimitExceededException ex) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(Map.of(
-                    "error", "Daily limit reached.", "limitExceeded", true,
+                    "error", "Daily limit reached.",
+                    "limitExceeded", true,
                     "dailyLimit", GeminiUsageService.DAILY_LIMIT,
-                    "message", "Today's limit of 12 successful AI requests is exhausted. Your quota will refresh tomorrow."));
+                    "questionsRemaining", 0,
+                    "message", "Today's limit of 12 successful AI requests is exhausted. Your quota will refresh tomorrow."
+            ));
         } catch (Exception ex) {
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .body(Map.of("error", "The AI service could not complete your request."));
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
+                    "error", "The AI service could not complete your request."
+            ));
         }
     }
 }
