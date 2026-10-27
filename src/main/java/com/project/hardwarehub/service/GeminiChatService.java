@@ -4,70 +4,73 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
-
 import java.util.List;
 import java.util.Map;
 
 @Service
 public class GeminiChatService {
-
     @Value("${gemini.api.key}")
     private String apiKey;
-
     private final RestClient restClient;
 
-    public GeminiChatService() {
-        this.restClient = RestClient.builder().build();
-    }
+    public GeminiChatService() { this.restClient = RestClient.builder().build(); }
 
     public String askHardwareBot(String userPrompt) {
-        if (apiKey == null || apiKey.isBlank()) {
+        return generateText(
+                "You are HardwareHub AI, an expert embedded electronics and hardware engineering assistant. "
+                        + "Answer concisely and specifically with voltage tolerances, pinouts, logic levels, and datasheets. "
+                        + "Politely decline questions unrelated to electronics or computing hardware.",
+                userPrompt);
+    }
+
+    public String summarizeBlog(String title, String manufacturer, String useCases, String content) {
+        String prompt = "Summarize this hardware blog for a reader. Use clear headings and concise bullet points. "
+                + "Include what the component is, key specifications stated in the article, common uses, and compatibility/safety notes. "
+                + "Do not invent specifications.\\nTitle: " + safe(title)
+                + "\\nManufacturer: " + safe(manufacturer)
+                + "\\nUse cases: " + safe(useCases)
+                + "\\nArticle:\\n" + safe(content);
+        return generateText("You are HardwareHub's technical editor. Be accurate, concise, and grounded in the supplied blog.", prompt);
+    }
+
+    public String compareHardware(String title, String manufacturer, String useCases, String content, String category) {
+        String prompt = "Compare the component in this blog with exactly five relevant real-world hardware alternatives. "
+                + "Return Markdown: a short introduction, a table with columns Component, Typical use, Main advantage, Limitation, Compatibility note, "
+                + "and a short selection guide. Do not invent precise specifications, prices, or availability. If uncertain, advise checking the datasheet. "
+                + "Clearly state alternatives may not be drop-in replacements."
+                + "\\nBlog title: " + safe(title) + "\\nManufacturer: " + safe(manufacturer)
+                + "\\nCategory: " + safe(category) + "\\nUse cases: " + safe(useCases) + "\\nArticle:\\n" + safe(content);
+        return generateText("You are HardwareHub's hardware comparison specialist. Be accurate and explain compatibility limitations.", prompt);
+    }
+
+    private String generateText(String systemInstruction, String userPrompt) {
+        if (apiKey == null || apiKey.isBlank())
             throw new IllegalStateException("Gemini API key is not configured on the server.");
-        }
 
-        // Change this line:
         String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey;
-
-        // System prompt instructing the model to act as a hardware specialist
-        String systemInstruction = "You are HardwareHub AI, an expert embedded electronics and hardware engineering assistant. "
-                + "Answer concisely and specifically with voltage tolerances, pinouts, logic levels, and datasheets. "
-                + "Politely decline questions that are not related to electronics or computing hardware.";
-
-        // Payload structure required by the Gemini API
         Map<String, Object> requestBody = Map.of(
-                "system_instruction", Map.of(
-                        "parts", List.of(Map.of("text", systemInstruction))
-                ),
-                "contents", List.of(
-                        Map.of(
-                                "role", "user",
-                                "parts", List.of(Map.of("text", userPrompt))
-                        )
-                )
+                "system_instruction", Map.of("parts", List.of(Map.of("text", systemInstruction))),
+                "contents", List.of(Map.of("role", "user", "parts", List.of(Map.of("text", userPrompt))))
         );
 
         try {
-            Map<?, ?> response = restClient.post()
-                    .uri(url)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody)
-                    .retrieve()
-                    .body(Map.class);
-
-            // Navigate response JSON: candidates[0].content.parts[0].text
-            if (response != null && response.containsKey("candidates")) {
-                List<?> candidates = (List<?>) response.get("candidates");
-                if (!candidates.isEmpty()) {
-                    Map<?, ?> firstCandidate = (Map<?, ?>) candidates.get(0);
-                    Map<?, ?> content = (Map<?, ?>) firstCandidate.get("content");
-                    List<?> parts = (List<?>) content.get("parts");
-                    Map<?, ?> firstPart = (Map<?, ?>) parts.get(0);
-                    return firstPart.get("text").toString();
+            Map<?, ?> response = restClient.post().uri(url)
+                    .contentType(MediaType.APPLICATION_JSON).body(requestBody)
+                    .retrieve().body(Map.class);
+            if (response != null && response.get("candidates") instanceof List<?> candidates && !candidates.isEmpty()) {
+                Object candidateObj = candidates.get(0);
+                if (candidateObj instanceof Map<?, ?> candidate
+                        && candidate.get("content") instanceof Map<?, ?> content
+                        && content.get("parts") instanceof List<?> parts && !parts.isEmpty()
+                        && parts.get(0) instanceof Map<?, ?> part && part.get("text") != null) {
+                    return part.get("text").toString();
                 }
             }
-            return "No response received from hardware model.";
-        } catch (Exception e) {
-            return "Error querying hardware assistant: " + e.getMessage();
+            throw new IllegalStateException("No response received from Gemini.");
+        } catch (Exception ex) {
+            throw new IllegalStateException("Gemini request failed: " + ex.getMessage(), ex);
         }
     }
+
+    private String safe(String value) { return value == null ? "" : value; }
 }
